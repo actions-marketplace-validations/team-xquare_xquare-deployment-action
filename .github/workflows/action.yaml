@@ -1,0 +1,77 @@
+name: 'Xquare deployment'
+
+steps:
+  # - name: Check config values and set environment values
+  #   id: config_script
+  #   shell: bash
+  #   run: $GITHUB_ACTION_PATH/config_script.sh
+
+  - name: Build Gradle
+    uses: gradle/gradle-build-action@v2
+    with:
+      arguments: |
+        build
+        --build-cache
+        --no-daemon
+
+  - name: Build docker image
+    id: build-docker
+    run: | 
+      image-name=${{ $SERVICE-NAME }}-${{ $SERVICE-TYPE }}-${{ $ENVIRONMENT }}
+      docker build -t $image-name .
+      echo ::set-output name=image-name::$image-name
+
+  - name: Login to ECR
+    id: ecr
+    uses: elgohr/ecr-login-action@master
+    with:
+      access_key: ${{ secrets.TEST_AWS_ACCESS_KEY }}
+      secret_access_key: ${{ secrets.TEST_AWS_PRIAVTE_KEY }}
+      region: ${{ secrets.AWS_REGION }}
+
+  - name: Get the tag if exist
+    id: get_tag
+    shell: bash
+    run: |
+      if [[ $GITHUB_REF == refs/tags/* ]]; then
+        echo ::set-output name=version_tag::$(echo $GITHUB_REF | cut -d / -f 3)
+      else
+        echo ::set-output name=version_tag::$(github.sha)
+      fi
+        
+  - name: Publish to Registry
+    uses: elgohr/Publish-Docker-Github-Action@master
+    with:
+      name: ${{ steps.build-docker.outputs.image-name }}
+      username: ${{ steps.ecr.outputs.username }}
+      password: ${{ steps.ecr.outputs.password }}
+      registry: ${{ steps.ecr.outputs.registry }}
+      tags: ${{ version_tag }}
+      buildargs: |
+        CLOUD_CONFIG_USERNAME=${{ secrets.CLOUD_CONFIG_USERNAME }}
+        CLOUD_CONFIG_PASSWORD=${{ secrets.CLOUD_CONFIG_PASSWORD }}
+        PROFILE=${{ $ENVIRONMENT }}
+
+  # - name: Check required config exists
+  #   id: check-yaml
+  #   run: $GITHUB_ACTION_PATH/check_config.sh
+  #   shell: bash
+  #   env:
+  #     CONFIG_FILE_PATH: ${{ inputs.config_file_path }}
+  #     TARGET_BANCH: ${{ GITHUB_REF#refs/heads/ }}
+  #     GIT_URL: ${{ $GITHUB_SERVER_URL }}/${{ $GITHUB_REPOSITORY }}
+
+  - name: Repository Dispatch
+    uses: peter-evans/repository-dispatch@v1
+    with:
+      token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
+      repository: team-xquare/xquare-gitops-repo
+      event-type: update_image
+      client-payload: |
+        '{
+          "ref" : "${{ github.ref }}", 
+          "version" : "${{ version_tag }}",
+          "service_name" : "${{ $SERVICE_NAME }}",
+          "service_type" : "${{ $SERVICE_TYPE }}",
+          "environment" : "${{ $ENVIRONMENT }}"
+        }'
